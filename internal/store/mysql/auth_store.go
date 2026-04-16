@@ -40,6 +40,13 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*AuthStore, error) {
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 
+	if cfg.AutoMigrate {
+		if err := runMigrations(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("run mysql migrations: %w", err)
+		}
+	}
+
 	return &AuthStore{db: db}, nil
 }
 
@@ -118,6 +125,131 @@ LIMIT 1
 	return s.scanUser(ctx, query, id)
 }
 
+func (s *AuthStore) ListUsers(ctx context.Context) ([]auth.User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, email, username, password_hash, is_active, roles_json, permissions_json, created_at, updated_at
+FROM users
+ORDER BY created_at ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []auth.User
+	for rows.Next() {
+		var (
+			user            auth.User
+			rolesJSON       []byte
+			permissionsJSON []byte
+		)
+
+		if err := rows.Scan(
+			&user.ID,
+			&user.Email,
+			&user.Username,
+			&user.PasswordHash,
+			&user.IsActive,
+			&rolesJSON,
+			&permissionsJSON,
+			&user.CreatedAt,
+			&user.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+
+		if err := json.Unmarshal(rolesJSON, &user.Roles); err != nil {
+			return nil, fmt.Errorf("unmarshal roles: %w", err)
+		}
+		if err := json.Unmarshal(permissionsJSON, &user.Permissions); err != nil {
+			return nil, fmt.Errorf("unmarshal permissions: %w", err)
+		}
+
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+
+	return users, nil
+}
+
+func (s *AuthStore) SaveClient(ctx context.Context, client auth.Client) error {
+	rolesJSON, err := json.Marshal(client.Roles)
+	if err != nil {
+		return fmt.Errorf("marshal client roles: %w", err)
+	}
+	permissionsJSON, err := json.Marshal(client.Permissions)
+	if err != nil {
+		return fmt.Errorf("marshal client permissions: %w", err)
+	}
+
+	query := `
+INSERT INTO clients (
+    id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name),
+    audience = VALUES(audience),
+    secret_hash = VALUES(secret_hash),
+    is_active = VALUES(is_active),
+    roles_json = VALUES(roles_json),
+    permissions_json = VALUES(permissions_json),
+    updated_at = VALUES(updated_at)
+`
+	_, err = s.db.ExecContext(ctx, query, client.ID, client.Name, client.Audience, client.SecretHash, client.IsActive, rolesJSON, permissionsJSON, client.CreatedAt.UTC(), client.UpdatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("save client: %w", err)
+	}
+	return nil
+}
+
+func (s *AuthStore) FindClientByID(ctx context.Context, id string) (auth.Client, error) {
+	query := `
+SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+FROM clients
+WHERE id = ?
+LIMIT 1
+`
+	return s.scanClient(ctx, query, id)
+}
+
+func (s *AuthStore) FindClientByAudience(ctx context.Context, audience string) (auth.Client, error) {
+	query := `
+SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+FROM clients
+WHERE audience = ?
+LIMIT 1
+`
+	return s.scanClient(ctx, query, audience)
+}
+
+func (s *AuthStore) ListClients(ctx context.Context) ([]auth.Client, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+FROM clients
+ORDER BY created_at ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query clients: %w", err)
+	}
+	defer rows.Close()
+
+	var clients []auth.Client
+	for rows.Next() {
+		client, err := s.scanClientRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, client)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate clients: %w", err)
+	}
+	return clients, nil
+}
+
 func (s *AuthStore) SaveSession(ctx context.Context, session auth.Session) error {
 	query := `
 INSERT INTO sessions (
@@ -166,6 +298,27 @@ LIMIT 1
 `
 
 	return s.scanSession(ctx, query, id)
+}
+
+func (s *AuthStore) ListSessionsByUserID(ctx context.Context, userID string) ([]auth.Session, error) {
+	query := `
+SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+FROM sessions
+WHERE user_id = ?
+ORDER BY created_at DESC
+`
+
+	return s.scanSessions(ctx, query, userID)
+}
+
+func (s *AuthStore) ListSessions(ctx context.Context) ([]auth.Session, error) {
+	query := `
+SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+FROM sessions
+ORDER BY created_at DESC
+`
+
+	return s.scanSessions(ctx, query)
 }
 
 func (s *AuthStore) RevokeSession(ctx context.Context, sessionID string) error {
@@ -250,6 +403,108 @@ func (s *AuthStore) scanSession(ctx context.Context, query string, args ...any) 
 	return session, nil
 }
 
+func (s *AuthStore) scanClient(ctx context.Context, query string, args ...any) (auth.Client, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return auth.Client{}, fmt.Errorf("query client: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return auth.Client{}, fmt.Errorf("client not found")
+	}
+	return s.scanClientRow(rows)
+}
+
+func (s *AuthStore) scanClientRow(scanner interface{ Scan(dest ...any) error }) (auth.Client, error) {
+	var (
+		client          auth.Client
+		rolesJSON       []byte
+		permissionsJSON []byte
+	)
+	if err := scanner.Scan(
+		&client.ID,
+		&client.Name,
+		&client.Audience,
+		&client.SecretHash,
+		&client.IsActive,
+		&rolesJSON,
+		&permissionsJSON,
+		&client.CreatedAt,
+		&client.UpdatedAt,
+	); err != nil {
+		return auth.Client{}, fmt.Errorf("scan client: %w", err)
+	}
+	if err := json.Unmarshal(rolesJSON, &client.Roles); err != nil {
+		return auth.Client{}, fmt.Errorf("unmarshal client roles: %w", err)
+	}
+	if err := json.Unmarshal(permissionsJSON, &client.Permissions); err != nil {
+		return auth.Client{}, fmt.Errorf("unmarshal client permissions: %w", err)
+	}
+	return client, nil
+}
+
 func normalizeLogin(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func (s *AuthStore) RecordAuditEvent(ctx context.Context, event auth.AuditEvent) error {
+	metadataJSON, err := json.Marshal(event.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal audit metadata: %w", err)
+	}
+
+	_, err = s.db.ExecContext(
+		ctx,
+		`INSERT INTO audit_events (id, user_id, event_type, metadata_json, created_at) VALUES (?, NULLIF(?, ''), ?, ?, ?)`,
+		event.ID,
+		event.UserID,
+		event.EventType,
+		metadataJSON,
+		event.CreatedAt.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("insert audit event: %w", err)
+	}
+
+	return nil
+}
+
+func (s *AuthStore) scanSessions(ctx context.Context, query string, args ...any) ([]auth.Session, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []auth.Session
+	for rows.Next() {
+		var (
+			session   auth.Session
+			revokedAt sql.NullTime
+		)
+
+		if err := rows.Scan(
+			&session.ID,
+			&session.UserID,
+			&session.RefreshTokenHash,
+			&session.CreatedAt,
+			&session.ExpiresAt,
+			&revokedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+
+		if revokedAt.Valid {
+			t := revokedAt.Time.UTC()
+			session.RevokedAt = &t
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
+	}
+
+	return sessions, nil
 }

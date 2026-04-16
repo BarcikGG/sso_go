@@ -30,7 +30,7 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	authService, err := auth.NewService(cfg, userStore, sessionStore)
+	authService, err := auth.NewService(cfg, userStore, sessionStore, clientStore(userStore), auditStore(userStore))
 	if err != nil {
 		return nil, err
 	}
@@ -80,4 +80,22 @@ func buildStores(ctx context.Context, cfg config.Config) (auth.UserStore, auth.S
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported database driver: %s", cfg.Database.Driver)
 	}
+}
+
+func auditStore(userStore auth.UserStore) auth.AuditStore {
+	store, ok := userStore.(auth.AuditStore)
+	if !ok {
+		return nil
+	}
+
+	return store
+}
+
+func clientStore(userStore auth.UserStore) auth.ClientStore {
+	store, ok := userStore.(auth.ClientStore)
+	if !ok {
+		return nil
+	}
+
+	return store
 }

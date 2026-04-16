@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,8 +39,9 @@ type TokenConfig struct {
 }
 
 type DatabaseConfig struct {
-	Driver string
-	URL    string
+	Driver      string
+	URL         string
+	AutoMigrate bool
 }
 
 type BootstrapConfig struct {
@@ -79,8 +81,9 @@ func Load() (Config, error) {
 			SigningKey:      stringFromEnv("SSO_SIGNING_KEY", "local-dev-signing-key-change-me"),
 		},
 		Database: DatabaseConfig{
-			Driver: stringFromEnv("SSO_DATABASE_DRIVER", "mysql"),
-			URL:    stringFromEnv("SSO_DATABASE_URL", ""),
+			Driver:      stringFromEnv("SSO_DATABASE_DRIVER", "mysql"),
+			URL:         stringFromEnv("SSO_DATABASE_URL", ""),
+			AutoMigrate: boolFromEnv("SSO_DATABASE_AUTO_MIGRATE", true),
 		},
 		Bootstrap: BootstrapConfig{
 			AdminEmail:    stringFromEnv("SSO_BOOTSTRAP_ADMIN_EMAIL", ""),
@@ -126,4 +129,20 @@ func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) 
 	}
 
 	return value, nil
+}
+
+func boolFromEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

@@ -1,2 +1,4 @@
+DROP TABLE IF EXISTS clients;
+DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS users;

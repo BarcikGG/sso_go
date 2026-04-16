@@ -33,15 +33,3 @@ CREATE TABLE IF NOT EXISTS audit_events (
     INDEX idx_audit_events_created_at (created_at),
     CONSTRAINT fk_audit_events_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
-
-CREATE TABLE IF NOT EXISTS clients (
-    id CHAR(32) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    audience VARCHAR(255) NOT NULL UNIQUE,
-    secret_hash VARCHAR(512) NOT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    roles_json JSON NOT NULL,
-    permissions_json JSON NOT NULL,
-    created_at DATETIME(6) NOT NULL,
-    updated_at DATETIME(6) NOT NULL
-);

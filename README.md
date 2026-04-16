@@ -16,6 +16,8 @@ Bootstrap iteration completed:
 - database config and migration scaffolding added
 - access tokens are signed with `Ed25519`
 - MySQL-backed storage is supported for persistent mode
+- MySQL migrations can run automatically on startup
+- auth audit events are recorded by the active store
 
 ## Run
 
@@ -49,6 +51,7 @@ export SSO_DATABASE_URL='user:password@tcp(127.0.0.1:3306)/sso?parseTime=true'
 - `SSO_SIGNING_KEY`
 - `SSO_DATABASE_DRIVER`
 - `SSO_DATABASE_URL`
+- `SSO_DATABASE_AUTO_MIGRATE`
 - `SSO_BOOTSTRAP_ADMIN_EMAIL`
 - `SSO_BOOTSTRAP_ADMIN_USERNAME`
 - `SSO_BOOTSTRAP_ADMIN_PASSWORD`
@@ -57,6 +60,5 @@ export SSO_DATABASE_URL='user:password@tcp(127.0.0.1:3306)/sso?parseTime=true'
 
 Implement:
 
-- MySQL schema rollout and migration execution
-- audit events
+- request-scoped audit fields: IP, user agent, request id
 - client-side auth SDK for FastAPI

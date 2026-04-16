@@ -28,7 +28,7 @@ func TestServiceLoginRefreshAndMe(t *testing.T) {
 	}
 
 	store := memory.NewAuthStore()
-	service, err := auth.NewService(cfg, store, store)
+	service, err := auth.NewService(cfg, store, store, store, store)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestServiceRejectsWrongPassword(t *testing.T) {
 	}
 
 	store := memory.NewAuthStore()
-	service, err := auth.NewService(cfg, store, store)
+	service, err := auth.NewService(cfg, store, store, store, store)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
