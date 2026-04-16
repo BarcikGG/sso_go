@@ -202,6 +202,21 @@ func (s *AuthStore) FindSessionByID(_ context.Context, id string) (auth.Session,
 	return session, nil
 }
 
+func (s *AuthStore) MarkSessionUsed(_ context.Context, sessionID string, usedAt time.Time, replacedBySessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessionsByID[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+
+	session.UsedAt = &usedAt
+	session.ReplacedBySessionID = replacedBySessionID
+	s.sessionsByID[sessionID] = session
+	return nil
+}
+
 func (s *AuthStore) ListSessionsByUserID(_ context.Context, userID string) ([]auth.Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -260,6 +275,22 @@ func (s *AuthStore) RevokeSession(_ context.Context, sessionID string) error {
 	now := time.Now().UTC()
 	session.RevokedAt = &now
 	s.sessionsByID[sessionID] = session
+
+	return nil
+}
+
+func (s *AuthStore) RevokeSessionFamily(_ context.Context, familyID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	for id, session := range s.sessionsByID {
+		if session.FamilyID != familyID {
+			continue
+		}
+		session.RevokedAt = &now
+		s.sessionsByID[id] = session
+	}
 
 	return nil
 }

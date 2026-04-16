@@ -15,20 +15,28 @@ type User struct {
 }
 
 type Session struct {
-	ID               string
-	UserID           string
-	RefreshTokenHash string
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
-	RevokedAt        *time.Time
+	ID                  string
+	UserID              string
+	FamilyID            string
+	ParentSessionID     string
+	ReplacedBySessionID string
+	RefreshTokenHash    string
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	UsedAt              *time.Time
+	RevokedAt           *time.Time
 }
 
 type SessionView struct {
-	ID        string     `json:"id"`
-	UserID    string     `json:"user_id"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	ID                  string     `json:"id"`
+	UserID              string     `json:"user_id"`
+	FamilyID            string     `json:"family_id"`
+	ParentSessionID     string     `json:"parent_session_id,omitempty"`
+	ReplacedBySessionID string     `json:"replaced_by_session_id,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ExpiresAt           time.Time  `json:"expires_at"`
+	UsedAt              *time.Time `json:"used_at,omitempty"`
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
 }
 
 type TokenPair struct {
@@ -40,11 +48,14 @@ type TokenPair struct {
 
 type AuthenticatedUser struct {
 	ID          string   `json:"id"`
+	SubjectType string   `json:"subject_type"`
 	Email       string   `json:"email"`
 	Username    string   `json:"username"`
 	IsActive    bool     `json:"is_active"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
+	Scopes      []string `json:"scopes"`
+	Audience    []string `json:"audience"`
 }
 
 type UserView struct {
@@ -90,6 +101,7 @@ type Client struct {
 	Audience    string
 	SecretHash  string
 	IsActive    bool
+	Scopes      []string
 	Roles       []string
 	Permissions []string
 	CreatedAt   time.Time
@@ -101,6 +113,7 @@ type ClientView struct {
 	Name        string    `json:"name"`
 	Audience    string    `json:"audience"`
 	IsActive    bool      `json:"is_active"`
+	Scopes      []string  `json:"scopes"`
 	Roles       []string  `json:"roles"`
 	Permissions []string  `json:"permissions"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -111,6 +124,7 @@ type CreateClientInput struct {
 	Name        string   `json:"name"`
 	Audience    string   `json:"audience"`
 	Secret      string   `json:"secret"`
+	Scopes      []string `json:"scopes"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	IsActive    *bool    `json:"is_active"`

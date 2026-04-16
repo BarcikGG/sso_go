@@ -12,19 +12,25 @@ import (
 )
 
 type AccessClaims struct {
+	SubjectType string
 	Subject     string
+	ClientID    string
 	Audience    []string
 	SessionID   string
+	Scopes      []string
 	Roles       []string
 	Permissions []string
 	ExpiresIn   time.Duration
 }
 
 type VerifiedAccessClaims struct {
+	SubjectType string
 	Issuer      string
 	Subject     string
+	ClientID    string
 	Audience    []string
 	SessionID   string
+	Scopes      []string
 	Roles       []string
 	Permissions []string
 	ExpiresAt   time.Time
@@ -43,10 +49,13 @@ type accessHeader struct {
 }
 
 type accessPayload struct {
+	SubjectType string   `json:"subject_type"`
 	Issuer      string   `json:"iss"`
 	Subject     string   `json:"sub"`
+	ClientID    string   `json:"client_id,omitempty"`
 	Audience    []string `json:"aud"`
 	SessionID   string   `json:"sid"`
+	Scopes      []string `json:"scopes,omitempty"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	IssuedAt    int64    `json:"iat"`
@@ -98,10 +107,13 @@ func (s *AccessSigner) Sign(claims AccessClaims) (string, time.Time, error) {
 	}
 
 	payloadJSON, err := json.Marshal(accessPayload{
+		SubjectType: claims.SubjectType,
 		Issuer:      s.issuer,
 		Subject:     claims.Subject,
+		ClientID:    claims.ClientID,
 		Audience:    claims.Audience,
 		SessionID:   claims.SessionID,
+		Scopes:      claims.Scopes,
 		Roles:       claims.Roles,
 		Permissions: claims.Permissions,
 		IssuedAt:    now.Unix(),
@@ -157,10 +169,13 @@ func (s *AccessSigner) Verify(token string) (VerifiedAccessClaims, error) {
 	}
 
 	return VerifiedAccessClaims{
+		SubjectType: payload.SubjectType,
 		Issuer:      payload.Issuer,
 		Subject:     payload.Subject,
+		ClientID:    payload.ClientID,
 		Audience:    append([]string(nil), payload.Audience...),
 		SessionID:   payload.SessionID,
+		Scopes:      append([]string(nil), payload.Scopes...),
 		Roles:       append([]string(nil), payload.Roles...),
 		Permissions: append([]string(nil), payload.Permissions...),
 		ExpiresAt:   time.Unix(payload.ExpiresAt, 0).UTC(),

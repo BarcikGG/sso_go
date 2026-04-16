@@ -123,6 +123,7 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (TokenPair, error
 	session := Session{
 		ID:               tokenutil.NewID(),
 		UserID:           user.ID,
+		FamilyID:         tokenutil.NewID(),
 		RefreshTokenHash: hashedRefresh,
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.cfg.Token.RefreshTokenTTL),
@@ -133,9 +134,11 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (TokenPair, error
 	}
 
 	accessToken, expiresAt, err := s.accessAuth.Sign(tokenutil.AccessClaims{
+		SubjectType: "user",
 		Subject:     user.ID,
 		Audience:    []string{audience},
 		SessionID:   session.ID,
+		Scopes:      buildScopes(user.Permissions),
 		Roles:       user.Roles,
 		Permissions: user.Permissions,
 		ExpiresIn:   s.cfg.Token.AccessTokenTTL,
@@ -172,6 +175,14 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 		})
 		return TokenPair{}, ErrInvalidToken
 	}
+	if session.UsedAt != nil {
+		_ = s.sessions.RevokeSessionFamily(ctx, session.FamilyID)
+		s.recordAuditEvent(ctx, session.UserID, "refresh_reuse_detected", map[string]any{
+			"session_id": session.ID,
+			"family_id":  session.FamilyID,
+		})
+		return TokenPair{}, ErrInvalidToken
+	}
 
 	user, err := s.users.FindUserByID(ctx, session.UserID)
 	if err != nil || !user.IsActive {
@@ -180,10 +191,6 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 			"cause":      "user_not_found_or_inactive",
 		})
 		return TokenPair{}, ErrUnauthorized
-	}
-
-	if err := s.sessions.RevokeSession(ctx, session.ID); err != nil {
-		return TokenPair{}, fmt.Errorf("revoke session: %w", err)
 	}
 
 	plainRefresh, hashedRefresh, err := tokenutil.NewRefreshToken()
@@ -195,9 +202,14 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 	newSession := Session{
 		ID:               tokenutil.NewID(),
 		UserID:           user.ID,
+		FamilyID:         session.FamilyID,
+		ParentSessionID:  session.ID,
 		RefreshTokenHash: hashedRefresh,
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.cfg.Token.RefreshTokenTTL),
+	}
+	if err := s.sessions.MarkSessionUsed(ctx, session.ID, now, newSession.ID); err != nil {
+		return TokenPair{}, fmt.Errorf("mark session used: %w", err)
 	}
 
 	if err := s.sessions.SaveSession(ctx, newSession); err != nil {
@@ -205,9 +217,11 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 	}
 
 	accessToken, expiresAt, err := s.accessAuth.Sign(tokenutil.AccessClaims{
+		SubjectType: "user",
 		Subject:     user.ID,
 		Audience:    []string{"default"},
 		SessionID:   newSession.ID,
+		Scopes:      buildScopes(user.Permissions),
 		Roles:       user.Roles,
 		Permissions: user.Permissions,
 		ExpiresIn:   s.cfg.Token.AccessTokenTTL,
@@ -276,9 +290,12 @@ func (s *Service) ClientToken(ctx context.Context, input ClientTokenInput) (Toke
 	}
 
 	accessToken, expiresAt, err := s.accessAuth.Sign(tokenutil.AccessClaims{
-		Subject:     "client:" + client.ID,
+		SubjectType: "client",
+		Subject:     client.ID,
+		ClientID:    client.ID,
 		Audience:    []string{client.Audience},
 		SessionID:   "",
+		Scopes:      cloneOrEmpty(client.Scopes),
 		Roles:       client.Roles,
 		Permissions: client.Permissions,
 		ExpiresIn:   s.cfg.Token.AccessTokenTTL,
@@ -338,6 +355,28 @@ func (s *Service) Me(ctx context.Context, accessToken string) (AuthenticatedUser
 		return AuthenticatedUser{}, ErrUnauthorized
 	}
 
+	if claims.SubjectType == "client" {
+		if s.clients == nil {
+			return AuthenticatedUser{}, ErrUnauthorized
+		}
+		client, err := s.clients.FindClientByID(ctx, claims.ClientID)
+		if err != nil || !client.IsActive {
+			return AuthenticatedUser{}, ErrUnauthorized
+		}
+
+		return AuthenticatedUser{
+			ID:          client.ID,
+			SubjectType: "client",
+			Email:       "",
+			Username:    client.Name,
+			IsActive:    client.IsActive,
+			Roles:       append([]string(nil), client.Roles...),
+			Permissions: append([]string(nil), client.Permissions...),
+			Scopes:      append([]string(nil), claims.Scopes...),
+			Audience:    append([]string(nil), claims.Audience...),
+		}, nil
+	}
+
 	session, err := s.sessions.FindSessionByID(ctx, claims.SessionID)
 	if err != nil || session.RevokedAt != nil || time.Now().UTC().After(session.ExpiresAt) {
 		return AuthenticatedUser{}, ErrUnauthorized
@@ -350,11 +389,14 @@ func (s *Service) Me(ctx context.Context, accessToken string) (AuthenticatedUser
 
 	return AuthenticatedUser{
 		ID:          user.ID,
+		SubjectType: "user",
 		Email:       user.Email,
 		Username:    user.Username,
 		IsActive:    user.IsActive,
 		Roles:       append([]string(nil), user.Roles...),
 		Permissions: append([]string(nil), user.Permissions...),
+		Scopes:      append([]string(nil), claims.Scopes...),
+		Audience:    append([]string(nil), claims.Audience...),
 	}, nil
 }
 
@@ -570,6 +612,7 @@ func (s *Service) CreateClient(ctx context.Context, accessToken string, input Cr
 		Audience:    audience,
 		SecretHash:  hash,
 		IsActive:    isActive,
+		Scopes:      cloneOrEmpty(input.Scopes),
 		Roles:       cloneOrEmpty(input.Roles),
 		Permissions: cloneOrEmpty(input.Permissions),
 		CreatedAt:   now,
@@ -736,11 +779,16 @@ func toClientView(client Client) ClientView {
 		Name:        client.Name,
 		Audience:    client.Audience,
 		IsActive:    client.IsActive,
+		Scopes:      cloneOrEmpty(client.Scopes),
 		Roles:       cloneOrEmpty(client.Roles),
 		Permissions: cloneOrEmpty(client.Permissions),
 		CreatedAt:   client.CreatedAt,
 		UpdatedAt:   client.UpdatedAt,
 	}
+}
+
+func buildScopes(permissions []string) []string {
+	return cloneOrEmpty(permissions)
 }
 
 func ExtractBearerToken(header string) (string, error) {

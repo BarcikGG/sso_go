@@ -1,6 +1,9 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type UserStore interface {
 	SaveUser(ctx context.Context, user User) error
@@ -15,7 +18,9 @@ type SessionStore interface {
 	FindSessionByID(ctx context.Context, id string) (Session, error)
 	ListSessionsByUserID(ctx context.Context, userID string) ([]Session, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	MarkSessionUsed(ctx context.Context, sessionID string, usedAt time.Time, replacedBySessionID string) error
 	RevokeSession(ctx context.Context, sessionID string) error
+	RevokeSessionFamily(ctx context.Context, familyID string) error
 	RevokeAllSessionsByUserID(ctx context.Context, userID string) error
 }
 

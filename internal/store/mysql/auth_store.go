@@ -176,6 +176,10 @@ ORDER BY created_at ASC
 }
 
 func (s *AuthStore) SaveClient(ctx context.Context, client auth.Client) error {
+	scopesJSON, err := json.Marshal(client.Scopes)
+	if err != nil {
+		return fmt.Errorf("marshal client scopes: %w", err)
+	}
 	rolesJSON, err := json.Marshal(client.Roles)
 	if err != nil {
 		return fmt.Errorf("marshal client roles: %w", err)
@@ -187,18 +191,19 @@ func (s *AuthStore) SaveClient(ctx context.Context, client auth.Client) error {
 
 	query := `
 INSERT INTO clients (
-    id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, name, audience, secret_hash, is_active, scopes_json, roles_json, permissions_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
     name = VALUES(name),
     audience = VALUES(audience),
     secret_hash = VALUES(secret_hash),
     is_active = VALUES(is_active),
+    scopes_json = VALUES(scopes_json),
     roles_json = VALUES(roles_json),
     permissions_json = VALUES(permissions_json),
     updated_at = VALUES(updated_at)
 `
-	_, err = s.db.ExecContext(ctx, query, client.ID, client.Name, client.Audience, client.SecretHash, client.IsActive, rolesJSON, permissionsJSON, client.CreatedAt.UTC(), client.UpdatedAt.UTC())
+	_, err = s.db.ExecContext(ctx, query, client.ID, client.Name, client.Audience, client.SecretHash, client.IsActive, scopesJSON, rolesJSON, permissionsJSON, client.CreatedAt.UTC(), client.UpdatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("save client: %w", err)
 	}
@@ -207,7 +212,7 @@ ON DUPLICATE KEY UPDATE
 
 func (s *AuthStore) FindClientByID(ctx context.Context, id string) (auth.Client, error) {
 	query := `
-SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+SELECT id, name, audience, secret_hash, is_active, scopes_json, roles_json, permissions_json, created_at, updated_at
 FROM clients
 WHERE id = ?
 LIMIT 1
@@ -217,7 +222,7 @@ LIMIT 1
 
 func (s *AuthStore) FindClientByAudience(ctx context.Context, audience string) (auth.Client, error) {
 	query := `
-SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+SELECT id, name, audience, secret_hash, is_active, scopes_json, roles_json, permissions_json, created_at, updated_at
 FROM clients
 WHERE audience = ?
 LIMIT 1
@@ -227,7 +232,7 @@ LIMIT 1
 
 func (s *AuthStore) ListClients(ctx context.Context) ([]auth.Client, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, audience, secret_hash, is_active, roles_json, permissions_json, created_at, updated_at
+SELECT id, name, audience, secret_hash, is_active, scopes_json, roles_json, permissions_json, created_at, updated_at
 FROM clients
 ORDER BY created_at ASC
 `)
@@ -253,11 +258,15 @@ ORDER BY created_at ASC
 func (s *AuthStore) SaveSession(ctx context.Context, session auth.Session) error {
 	query := `
 INSERT INTO sessions (
-    id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
-) VALUES (?, ?, ?, ?, ?, ?)
+    id, user_id, family_id, parent_session_id, replaced_by_session_id, refresh_token_hash, created_at, expires_at, used_at, revoked_at
+) VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
+    family_id = VALUES(family_id),
+    parent_session_id = VALUES(parent_session_id),
+    replaced_by_session_id = VALUES(replaced_by_session_id),
     refresh_token_hash = VALUES(refresh_token_hash),
     expires_at = VALUES(expires_at),
+    used_at = VALUES(used_at),
     revoked_at = VALUES(revoked_at)
 `
 
@@ -266,9 +275,13 @@ ON DUPLICATE KEY UPDATE
 		query,
 		session.ID,
 		session.UserID,
+		session.FamilyID,
+		session.ParentSessionID,
+		session.ReplacedBySessionID,
 		session.RefreshTokenHash,
 		session.CreatedAt.UTC(),
 		session.ExpiresAt.UTC(),
+		session.UsedAt,
 		session.RevokedAt,
 	)
 	if err != nil {
@@ -280,7 +293,7 @@ ON DUPLICATE KEY UPDATE
 
 func (s *AuthStore) FindSessionByRefreshTokenHash(ctx context.Context, hash string) (auth.Session, error) {
 	query := `
-SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+SELECT id, user_id, family_id, parent_session_id, replaced_by_session_id, refresh_token_hash, created_at, expires_at, used_at, revoked_at
 FROM sessions
 WHERE refresh_token_hash = ?
 LIMIT 1
@@ -291,18 +304,17 @@ LIMIT 1
 
 func (s *AuthStore) FindSessionByID(ctx context.Context, id string) (auth.Session, error) {
 	query := `
-SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+SELECT id, user_id, family_id, parent_session_id, replaced_by_session_id, refresh_token_hash, created_at, expires_at, used_at, revoked_at
 FROM sessions
 WHERE id = ?
 LIMIT 1
 `
-
 	return s.scanSession(ctx, query, id)
 }
 
 func (s *AuthStore) ListSessionsByUserID(ctx context.Context, userID string) ([]auth.Session, error) {
 	query := `
-SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+SELECT id, user_id, family_id, parent_session_id, replaced_by_session_id, refresh_token_hash, created_at, expires_at, used_at, revoked_at
 FROM sessions
 WHERE user_id = ?
 ORDER BY created_at DESC
@@ -313,7 +325,7 @@ ORDER BY created_at DESC
 
 func (s *AuthStore) ListSessions(ctx context.Context) ([]auth.Session, error) {
 	query := `
-SELECT id, user_id, refresh_token_hash, created_at, expires_at, revoked_at
+SELECT id, user_id, family_id, parent_session_id, replaced_by_session_id, refresh_token_hash, created_at, expires_at, used_at, revoked_at
 FROM sessions
 ORDER BY created_at DESC
 `
@@ -327,6 +339,22 @@ func (s *AuthStore) RevokeSession(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("revoke session: %w", err)
 	}
 
+	return nil
+}
+
+func (s *AuthStore) MarkSessionUsed(ctx context.Context, sessionID string, usedAt time.Time, replacedBySessionID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET used_at = ?, replaced_by_session_id = ? WHERE id = ?`, usedAt.UTC(), replacedBySessionID, sessionID)
+	if err != nil {
+		return fmt.Errorf("mark session used: %w", err)
+	}
+	return nil
+}
+
+func (s *AuthStore) RevokeSessionFamily(ctx context.Context, familyID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL`, time.Now().UTC(), familyID)
+	if err != nil {
+		return fmt.Errorf("revoke session family: %w", err)
+	}
 	return nil
 }
 
@@ -376,16 +404,23 @@ func (s *AuthStore) scanUser(ctx context.Context, query string, args ...any) (au
 
 func (s *AuthStore) scanSession(ctx context.Context, query string, args ...any) (auth.Session, error) {
 	var (
-		session   auth.Session
-		revokedAt sql.NullTime
+		session             auth.Session
+		parentSessionID     sql.NullString
+		replacedBySessionID sql.NullString
+		usedAt              sql.NullTime
+		revokedAt           sql.NullTime
 	)
 
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
 		&session.ID,
 		&session.UserID,
+		&session.FamilyID,
+		&parentSessionID,
+		&replacedBySessionID,
 		&session.RefreshTokenHash,
 		&session.CreatedAt,
 		&session.ExpiresAt,
+		&usedAt,
 		&revokedAt,
 	)
 	if err != nil {
@@ -395,6 +430,16 @@ func (s *AuthStore) scanSession(ctx context.Context, query string, args ...any) 
 		return auth.Session{}, fmt.Errorf("query session: %w", err)
 	}
 
+	if parentSessionID.Valid {
+		session.ParentSessionID = parentSessionID.String
+	}
+	if replacedBySessionID.Valid {
+		session.ReplacedBySessionID = replacedBySessionID.String
+	}
+	if usedAt.Valid {
+		t := usedAt.Time.UTC()
+		session.UsedAt = &t
+	}
 	if revokedAt.Valid {
 		t := revokedAt.Time.UTC()
 		session.RevokedAt = &t
@@ -418,6 +463,7 @@ func (s *AuthStore) scanClient(ctx context.Context, query string, args ...any) (
 func (s *AuthStore) scanClientRow(scanner interface{ Scan(dest ...any) error }) (auth.Client, error) {
 	var (
 		client          auth.Client
+		scopesJSON      []byte
 		rolesJSON       []byte
 		permissionsJSON []byte
 	)
@@ -427,12 +473,16 @@ func (s *AuthStore) scanClientRow(scanner interface{ Scan(dest ...any) error }) 
 		&client.Audience,
 		&client.SecretHash,
 		&client.IsActive,
+		&scopesJSON,
 		&rolesJSON,
 		&permissionsJSON,
 		&client.CreatedAt,
 		&client.UpdatedAt,
 	); err != nil {
 		return auth.Client{}, fmt.Errorf("scan client: %w", err)
+	}
+	if err := json.Unmarshal(scopesJSON, &client.Scopes); err != nil {
+		return auth.Client{}, fmt.Errorf("unmarshal client scopes: %w", err)
 	}
 	if err := json.Unmarshal(rolesJSON, &client.Roles); err != nil {
 		return auth.Client{}, fmt.Errorf("unmarshal client roles: %w", err)
@@ -479,21 +529,38 @@ func (s *AuthStore) scanSessions(ctx context.Context, query string, args ...any)
 	var sessions []auth.Session
 	for rows.Next() {
 		var (
-			session   auth.Session
-			revokedAt sql.NullTime
+			session             auth.Session
+			parentSessionID     sql.NullString
+			replacedBySessionID sql.NullString
+			usedAt              sql.NullTime
+			revokedAt           sql.NullTime
 		)
 
 		if err := rows.Scan(
 			&session.ID,
 			&session.UserID,
+			&session.FamilyID,
+			&parentSessionID,
+			&replacedBySessionID,
 			&session.RefreshTokenHash,
 			&session.CreatedAt,
 			&session.ExpiresAt,
+			&usedAt,
 			&revokedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 
+		if parentSessionID.Valid {
+			session.ParentSessionID = parentSessionID.String
+		}
+		if replacedBySessionID.Valid {
+			session.ReplacedBySessionID = replacedBySessionID.String
+		}
+		if usedAt.Valid {
+			t := usedAt.Time.UTC()
+			session.UsedAt = &t
+		}
 		if revokedAt.Valid {
 			t := revokedAt.Time.UTC()
 			session.RevokedAt = &t
