@@ -1,148 +1,60 @@
+// Package config reads and validates the process-level SSO settings.
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"time"
-)
-
-const (
-	defaultHTTPPort        = 8080
-	defaultAccessTokenTTL  = 15 * time.Minute
-	defaultRefreshTokenTTL = 24 * time.Hour * 7
 )
 
 type Config struct {
-	App       AppConfig
-	HTTP      HTTPConfig
-	Token     TokenConfig
-	Database  DatabaseConfig
-	Bootstrap BootstrapConfig
+	DatabaseURL string
+	Issuer      string
+	HTTPPort    string
+	GRPCPort    string
+	KafkaBroker string
+	KafkaTopic  string
+	RotateKey   bool
 }
 
-type AppConfig struct {
-	Name string
-	Env  string
-}
-
-type HTTPConfig struct {
-	Port int
-}
-
-type TokenConfig struct {
-	Issuer          string
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
-	SigningKey      string
-}
-
-type DatabaseConfig struct {
-	Driver      string
-	URL         string
-	AutoMigrate bool
-}
-
-type BootstrapConfig struct {
-	AdminEmail    string
-	AdminUsername string
-	AdminPassword string
-}
-
-func Load() (Config, error) {
-	port, err := intFromEnv("SSO_HTTP_PORT", defaultHTTPPort)
-	if err != nil {
-		return Config{}, err
+func getenv(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
 	}
-
-	accessTTL, err := durationFromEnv("SSO_ACCESS_TOKEN_TTL", defaultAccessTokenTTL)
-	if err != nil {
-		return Config{}, err
-	}
-
-	refreshTTL, err := durationFromEnv("SSO_REFRESH_TOKEN_TTL", defaultRefreshTokenTTL)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg := Config{
-		App: AppConfig{
-			Name: stringFromEnv("SSO_APP_NAME", "sso"),
-			Env:  stringFromEnv("SSO_ENV", "dev"),
-		},
-		HTTP: HTTPConfig{
-			Port: port,
-		},
-		Token: TokenConfig{
-			Issuer:          stringFromEnv("SSO_ISSUER", "sso.local"),
-			AccessTokenTTL:  accessTTL,
-			RefreshTokenTTL: refreshTTL,
-			SigningKey:      stringFromEnv("SSO_SIGNING_KEY", "local-dev-signing-key-change-me"),
-		},
-		Database: DatabaseConfig{
-			Driver:      stringFromEnv("SSO_DATABASE_DRIVER", "mysql"),
-			URL:         stringFromEnv("SSO_DATABASE_URL", ""),
-			AutoMigrate: boolFromEnv("SSO_DATABASE_AUTO_MIGRATE", true),
-		},
-		Bootstrap: BootstrapConfig{
-			AdminEmail:    stringFromEnv("SSO_BOOTSTRAP_ADMIN_EMAIL", ""),
-			AdminUsername: stringFromEnv("SSO_BOOTSTRAP_ADMIN_USERNAME", ""),
-			AdminPassword: stringFromEnv("SSO_BOOTSTRAP_ADMIN_PASSWORD", ""),
-		},
-	}
-
-	return cfg, nil
-}
-
-func stringFromEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-
 	return fallback
 }
 
-func intFromEnv(key string, fallback int) (int, error) {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return fallback, nil
+func Load() (Config, error) {
+	c := Config{
+		DatabaseURL: os.Getenv("SSO_DATABASE_URL"),
+		Issuer:      strings.TrimRight(getenv("SSO_ISSUER", "http://localhost:8080"), "/"),
+		HTTPPort:    getenv("SSO_HTTP_PORT", "8080"),
+		GRPCPort:    getenv("SSO_GRPC_PORT", "9090"),
+		KafkaBroker: os.Getenv("KAFKA_BROKER"),
+		KafkaTopic:  "sso.events",
+		RotateKey:   os.Getenv("SSO_ROTATE_KEY_ON_START") == "1",
 	}
-
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s: parse int: %w", key, err)
+	if c.DatabaseURL == "" {
+		return c, errors.New("SSO_DATABASE_URL is required")
 	}
-
-	return value, nil
-}
-
-func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return fallback, nil
+	u, err := url.Parse(c.Issuer)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return c, errors.New("SSO_ISSUER must be an HTTP(S) origin without credentials, path, query or fragment")
 	}
-
-	value, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s: parse duration: %w", key, err)
+	if u.Scheme == "http" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
+		return c, errors.New("SSO_ISSUER must use HTTPS outside localhost")
 	}
-
-	return value, nil
-}
-
-func boolFromEnv(key string, fallback bool) bool {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
+	for name, port := range map[string]string{"SSO_HTTP_PORT": c.HTTPPort, "SSO_GRPC_PORT": c.GRPCPort} {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return c, fmt.Errorf("invalid %s: expected port number from 1 to 65535", name)
+		}
 	}
-
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
+	if (os.Getenv("SSO_GRPC_TLS_CERT") == "") != (os.Getenv("SSO_GRPC_TLS_KEY") == "") {
+		return c, errors.New("SSO_GRPC_TLS_CERT and SSO_GRPC_TLS_KEY must be configured together")
 	}
+	return c, nil
 }
