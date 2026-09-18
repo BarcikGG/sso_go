@@ -77,7 +77,7 @@ SSO_NEW_CLIENT_SECRET='длинный-случайный-секрет' \
 
 ### 2. Реализовать вход на сервере приложения
 
-При начале входа сгенерируйте криптографически случайные `state`, `nonce`, `code_verifier`; положите их в короткую серверную login-транзакцию, связанную с браузером, и сформируйте SHA-256 PKCE challenge. Отправьте браузер на `authorization_endpoint` из discovery со `scope=openid profile email`, `response_type=code`, зарегистрированным `redirect_uri` и этими параметрами. Действительная сессия SSO обработает запрос автоматически.
+При начале входа сгенерируйте криптографически случайные `state`, `nonce`, `code_verifier`; положите их в короткую серверную login-транзакцию, связанную с браузером, и сформируйте SHA-256 PKCE challenge. Отправьте браузер на `authorization_endpoint` из discovery со `scope=openid profile email offline_access`, `response_type=code`, зарегистрированным `redirect_uri` и этими параметрами. `offline_access` нужен для серверного обновления токенов. Действительная сессия SSO обработает запрос автоматически.
 
 На callback сверяйте `state` и удаляйте login-транзакцию одноразово. Код обменивайте серверным POST на `token_endpoint`, передавая `client_id`, `client_secret`, тот же `redirect_uri` и `code_verifier`. Проверяйте ID-токен по JWKS: подпись RS256 и `kid`, точный `iss`, `aud=client_id`, срок и `nonce`. Отклоняйте неизвестные алгоритмы и ключи. Для защиты API другого сервиса отдельно проверяйте access token с `aud` этого сервиса; ID-токен для этого не подходит.
 
