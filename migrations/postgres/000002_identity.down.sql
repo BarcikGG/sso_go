@@ -1,0 +1,10 @@
+DROP TABLE sync_events;
+ALTER TABLE refresh_tokens DROP COLUMN family_expires_at;
+DROP TABLE auth_limits;
+DROP TABLE password_resets;
+ALTER TABLE accounts DROP COLUMN is_global_admin;
+ALTER TABLE accounts DROP COLUMN status;
+ALTER TABLE accounts DROP COLUMN family_name;
+ALTER TABLE accounts DROP COLUMN given_name;
+DROP INDEX accounts_login_lower_idx;
+ALTER TABLE accounts DROP COLUMN login;

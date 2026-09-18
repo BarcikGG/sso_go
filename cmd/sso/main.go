@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/endl/sso_go/internal/app"
 	"github.com/endl/sso_go/internal/config"
-	"github.com/endl/sso_go/internal/provider"
 )
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 func run(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	s, err := provider.New(ctx, cfg.DatabaseURL, cfg.Issuer)
+	s, err := app.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -48,6 +48,11 @@ func run(cfg config.Config) error {
 				return errors.New("usage: sso --grant-project-admin PROJECT_ID VERIFIED_EMAIL")
 			}
 			return s.GrantProjectAdmin(ctx, os.Args[2], os.Args[3])
+		case "--grant-global-admin":
+			if len(os.Args) != 3 {
+				return errors.New("usage: sso --grant-global-admin VERIFIED_EMAIL")
+			}
+			return s.GrantGlobalAdmin(ctx, os.Args[2])
 		default:
 			return errors.New("unknown command")
 		}
@@ -58,7 +63,7 @@ func run(cfg config.Config) error {
 		}
 	}
 
-	g, err := s.GRPCServer()
+	g, err := s.GRPC.GRPCServer()
 	if err != nil {
 		return err
 	}
@@ -71,11 +76,12 @@ func run(cfg config.Config) error {
 		grpcListener.Close()
 		return err
 	}
-	h := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	h := &http.Server{Handler: s.HTTP.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	serveErrors := make(chan error, 2)
 	go func() { serveErrors <- g.Serve(grpcListener) }()
 	go func() { serveErrors <- h.Serve(httpListener) }()
 	go s.PublishOutbox(ctx, cfg.KafkaBroker, cfg.KafkaTopic)
+	go s.Cleanup(ctx)
 	log.Printf("SSO HTTP :%s, gRPC :%s", cfg.HTTPPort, cfg.GRPCPort)
 
 	select {

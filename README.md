@@ -1,21 +1,37 @@
-# SSO provider
+# SSO для Octopus и других веб-приложений
 
-Подробное описание архитектуры, OIDC-потока и пошаговое подключение нового приложения: [документация на русском](docs/architecture-and-integration.ru.md).
+SSO хранит общий аккаунт, профиль и доступы к проектам. Каждый проект создаёт собственную сессию после OIDC-входа и хранит локальную копию пользователей и ролей. Общие страницы регистрации, входа и центральной админки обслуживает отдельный фронтенд.
 
-The `cmd/sso` binary serves the OIDC Authorization Code flow and a protected gRPC management API. Fosite validates registered OAuth clients, scopes, response type, and redirect URIs at `/authorize`; PostgreSQL stores the authorization codes, PKCE challenges, sessions, hashed refresh tokens, project access, signing keys, audit records, and outbox events. The legacy JSON login API and MySQL store have been removed.
+Интерфейс находится в отдельном проекте [`../sso_frontend`](../sso_frontend): React/Vite и Nginx. Go-сервис отдаёт OIDC и JSON API, а внешний адрес `localhost:8080` обслуживает фронтенд-прокси. Страницы и стили больше не лежат в Go-пакете.
 
-Run the complete local stack from the workspace root with `docker compose up --wait -d --build`. The shared login and registration pages are at `http://localhost:8080`, the pilot application at `http://localhost:8081`, and Mailpit at `http://localhost:8025`. The local bootstrap project and client are `main_api`; the bootstrap administrator is `admin@example.local` with password from `SSO_ADMIN_PASSWORD` (default `local-admin-password-change-me`). Set stronger values before sharing a local environment.
+**Начать здесь:** [как работает SSO и как подключить новое приложение](docs/integration.ru.md). [Целевая схема Octopus и конструктора](docs/target-architecture.ru.md) объясняет принятые продуктовые решения.
 
-The PostgreSQL migration runner applies numbered migrations under `migrations/postgres` in a transaction. SSO needs `SSO_DATABASE_URL` and `SSO_ISSUER`. The Compose file shows the other settings: client registration, SMTP address and mode (`plain` only for local Mailpit, `starttls` by default, or `tls`), optional SMTP user/password, Kafka broker, and gRPC port. Set `SSO_GRPC_TLS_CERT` and `SSO_GRPC_TLS_KEY` for TLS gRPC. The client needs `SSO_GRPC_TLS_CA` to verify it. Public issuer and redirect URLs must match the browser-facing HTTPS addresses in deployment.
+[Архитектура кода](docs/code-architecture.ru.md) показывает границы HTTP/gRPC, сервисов и репозитория и правила добавления новых сценариев.
 
-Register another project client with `SSO_NEW_CLIENT_SECRET=<secret> docker compose exec -T -e SSO_NEW_CLIENT_SECRET sso /sso --register-client CLIENT_ID PROJECT_ID https://app.example/callback`. Pass additional exact redirect URIs as further arguments. The command rejects wildcard, duplicate, and non-HTTPS remote URIs.
+Локальный запуск из корня рабочего каталога:
 
-To bootstrap the first administrator of a new project after their email is verified, run `docker compose exec -T sso /sso --grant-project-admin PROJECT_ID admin@example.com`. This operator command records an audit entry and an outbox event.
+```sh
+docker compose up --wait -d --build
+```
 
-Access tokens are five-minute RS256 JWTs for one project; management tokens use the SSO gRPC audience. Signing keys are persisted in PostgreSQL. Run `docker compose exec -T sso /sso --rotate-key` to rotate; the old public key remains in JWKS for ten minutes. Refresh tokens are SHA-256 hashed in SSO and rotated under a row lock. Reuse revokes the whole family. Service-specific roles are read from PostgreSQL when issuing tokens, and gRPC administrator rights are checked against current access.
+- SSO: <http://localhost:8080/register> и <http://localhost:8080/login>.
+- Центральная админка: <http://localhost:8080/admin>.
+- Пилотное приложение: <http://localhost:8081>.
+- Письма Mailpit: <http://localhost:8025>.
 
-The outbox publisher sends `sso.events` to Kafka and retains unsent rows. Consumers record event IDs and commit Kafka positions after their database transaction. `/metrics` exposes pending outbox rows, retried rows, and oldest pending age. The Compose setup is for local development; production needs durable PostgreSQL and Kafka, TLS, managed secrets, monitoring, and backups.
+Локальный глобальный администратор: `admin@example.local`, пароль из `SSO_ADMIN_PASSWORD` (значение по умолчанию в Compose только для разработки). Новый пользователь подтверждает email, затем администратор активирует аккаунт и назначает роль проекту. Пароль можно изменить в `/settings/password` или восстановить через `/password/forgot`.
 
-The pilot application's `/metrics` exposes Kafka errors, consumed events, `sync_pending` responses, and periodic copy mismatches for users with active sessions. Reconciliation runs outside ordinary requests.
+SSO использует отдельную PostgreSQL БД и версионированные миграции. Клиенты регистрируются с точными redirect URI; Authorization Code требует PKCE S256. Access JWT живёт пять минут, содержит аудиторию одного проекта и подписан RS256. Открытые ключи доступны через JWKS. Для будущего Go-приложения достаточно OIDC и `/sync/snapshot` + `/sync/changes`; существующие Kafka и gRPC обслуживают пилот.
 
-Tests: `go test ./...` here; `go test ./...` in `main_api`; `python3 scripts/smoke.py` and `python3 scripts/recovery.py` from the workspace root after Compose starts. CI also runs the Playwright browser journey.
+Проверка из корня рабочего каталога:
+
+```sh
+(cd sso && go test ./...)
+(cd octopus_api && go test ./...)
+python3 scripts/smoke.py
+python3 scripts/sso_identity.py
+python3 scripts/recovery.py
+python3 scripts/key_rotation.py
+```
+
+Браузерный сценарий `scripts/browser.py` запускается в CI с Playwright. Перед боевым запуском прочитайте раздел ограничений и требований к эксплуатации в [инструкции](docs/integration.ru.md#перед-боевым-развёртыванием).

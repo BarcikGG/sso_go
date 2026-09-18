@@ -1,9 +1,11 @@
-package provider
+package grpcapi
 
 import (
 	"context"
 	"encoding/json"
 	"os"
+
+	"github.com/endl/sso_go/internal/service"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -11,6 +13,10 @@ import (
 )
 
 type rpcFn func(context.Context, *structpb.Struct) (*structpb.Struct, error)
+
+type Server struct{ management service.Management }
+
+func New(management service.Management) *Server { return &Server{management: management} }
 
 func grpcMethod(name string, fn rpcFn) grpc.MethodDesc {
 	return grpc.MethodDesc{MethodName: name, Handler: func(_ any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {

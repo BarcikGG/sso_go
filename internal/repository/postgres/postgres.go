@@ -1,4 +1,4 @@
-// Package postgres owns the SSO database connection, migrations, and read models.
+// Package postgres owns SSO migrations, queries and transactional persistence.
 package postgres
 
 import (
@@ -52,7 +52,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 	if err = tx.QueryRow(ctx, "SELECT coalesce(max(version),0) FROM schema_migrations").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return fmt.Errorf("database migration %d is newer than this binary", version)
 	}
 	if version == 0 {
@@ -66,6 +66,15 @@ func (d *DB) Migrate(ctx context.Context) error {
 			}
 		}
 		if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES(1)"); err != nil {
+			return err
+		}
+		version = 1
+	}
+	if version == 1 {
+		if _, err = tx.Exec(ctx, migration.Identity); err != nil {
+			return fmt.Errorf("migration 2: %w", err)
+		}
+		if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES(2)"); err != nil {
 			return err
 		}
 	}
@@ -100,13 +109,14 @@ func (d *DB) SetClientAssertionJWT(context.Context, string, time.Time) error {
 }
 
 type Account struct {
-	ID, Email, PasswordHash, Name, Avatar string
-	Verified                              *time.Time
+	ID, Email, Login, PasswordHash, Name, GivenName, FamilyName, Avatar, Status string
+	Verified                                                                    *time.Time
+	GlobalAdmin                                                                 bool
 }
 
 func (d *DB) Account(ctx context.Context, id string) (Account, error) {
 	var a Account
-	err := d.Pool.QueryRow(ctx, "SELECT id,email,password_hash,name,avatar_url,email_verified_at FROM accounts WHERE id=$1", id).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.Name, &a.Avatar, &a.Verified)
+	err := d.Pool.QueryRow(ctx, "SELECT id,email,login,password_hash,name,given_name,family_name,avatar_url,status,email_verified_at,is_global_admin FROM accounts WHERE id=$1", id).Scan(&a.ID, &a.Email, &a.Login, &a.PasswordHash, &a.Name, &a.GivenName, &a.FamilyName, &a.Avatar, &a.Status, &a.Verified, &a.GlobalAdmin)
 	return a, err
 }
 func (d *DB) Access(ctx context.Context, user, project string) ([]string, error) {

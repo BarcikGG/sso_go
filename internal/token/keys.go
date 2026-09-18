@@ -15,16 +15,22 @@ import (
 	"math/big"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type KeyStore interface {
+	RotateSigningKey(context.Context, string, []byte, []byte) error
+	ActiveSigningKey(context.Context) (string, []byte, error)
+	ActiveSigningKeyCount(context.Context) (int, error)
+	PublicSigningKeys(context.Context) ([]json.RawMessage, error)
+	VerificationKey(context.Context, string) ([]byte, error)
+}
+
 type KeySet struct {
-	pool   *pgxpool.Pool
+	store  KeyStore
 	issuer string
 }
 
-func New(pool *pgxpool.Pool, issuer string) *KeySet { return &KeySet{pool: pool, issuer: issuer} }
+func New(store KeyStore, issuer string) *KeySet { return &KeySet{store: store, issuer: issuer} }
 
 func randomID() (string, error) {
 	b := make([]byte, 32)
@@ -55,26 +61,10 @@ func (k *KeySet) Rotate(ctx context.Context) error {
 	public := jwk{"RSA", kid, "sig", "RS256", base64.RawURLEncoding.EncodeToString(key.N.Bytes()), base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())}
 	pub, _ := json.Marshal(public)
 	private := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	tx, err := k.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(77213002)"); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE signing_keys SET retired_at=now(),publish_until=now()+interval '10 minutes' WHERE retired_at IS NULL"); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, "INSERT INTO signing_keys(kid,private_pem,public_jwk) VALUES($1,$2,$3)", kid, private, pub); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return k.store.RotateSigningKey(ctx, kid, private, pub)
 }
 func (k *KeySet) active(ctx context.Context) (string, *rsa.PrivateKey, error) {
-	var kid string
-	var pemBytes []byte
-	err := k.pool.QueryRow(ctx, "SELECT kid,private_pem FROM signing_keys WHERE retired_at IS NULL ORDER BY created_at DESC LIMIT 1").Scan(&kid, &pemBytes)
+	kid, pemBytes, err := k.store.ActiveSigningKey(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -86,8 +76,7 @@ func (k *KeySet) active(ctx context.Context) (string, *rsa.PrivateKey, error) {
 	return kid, key, err
 }
 func (k *KeySet) Ensure(ctx context.Context) error {
-	var n int
-	err := k.pool.QueryRow(ctx, "SELECT count(*) FROM signing_keys WHERE retired_at IS NULL").Scan(&n)
+	n, err := k.store.ActiveSigningKeyCount(ctx)
 	if err != nil {
 		return err
 	}
@@ -97,20 +86,11 @@ func (k *KeySet) Ensure(ctx context.Context) error {
 	return nil
 }
 func (k *KeySet) JWKS(ctx context.Context) (any, error) {
-	rows, err := k.pool.Query(ctx, "SELECT public_jwk FROM signing_keys WHERE retired_at IS NULL OR publish_until>now()")
+	keys, err := k.store.PublicSigningKeys(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	keys := []json.RawMessage{}
-	for rows.Next() {
-		var b []byte
-		if err = rows.Scan(&b); err != nil {
-			return nil, err
-		}
-		keys = append(keys, b)
-	}
-	return map[string]any{"keys": keys}, rows.Err()
+	return map[string]any{"keys": keys}, nil
 }
 func (k *KeySet) Sign(ctx context.Context, claims map[string]any, typ string) (string, error) {
 	kid, key, err := k.active(ctx)
@@ -150,8 +130,7 @@ func (k *KeySet) Verify(ctx context.Context, raw, audience, typ string) (map[str
 	if header.Alg != "RS256" || header.Kid == "" || header.Typ != typ {
 		return nil, errors.New("invalid jwt header")
 	}
-	var pemBytes []byte
-	err = k.pool.QueryRow(ctx, "SELECT private_pem FROM signing_keys WHERE kid=$1 AND (retired_at IS NULL OR publish_until>now())", header.Kid).Scan(&pemBytes)
+	pemBytes, err := k.store.VerificationKey(ctx, header.Kid)
 	if err != nil {
 		return nil, err
 	}

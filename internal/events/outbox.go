@@ -7,13 +7,13 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/endl/sso_go/internal/repository/postgres"
 	"github.com/segmentio/kafka-go"
 )
 
 // PublishOutbox keeps rows until Kafka acknowledges them. Duplicate sends are safe for
 // consumers because every event has a stable ID.
-func PublishOutbox(ctx context.Context, pool *pgxpool.Pool, broker, topic string) {
+func PublishOutbox(ctx context.Context, repo *postgres.DB, broker, topic string) {
 	if broker == "" {
 		return
 	}
@@ -27,35 +27,21 @@ func PublishOutbox(ctx context.Context, pool *pgxpool.Pool, broker, topic string
 			return
 		case <-ticker.C:
 		}
-		tx, err := pool.Begin(ctx)
+		_, err := repo.PublishNext(ctx, func(entry postgres.OutboxEntry) error {
+			var value any
+			if err := json.Unmarshal(entry.Payload, &value); err != nil {
+				return err
+			}
+			body, err := json.Marshal(map[string]any{"id": entry.ID, "project_id": entry.Project, "type": entry.Kind, "payload": value})
+			if err != nil {
+				return err
+			}
+			sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			return writer.WriteMessages(sendCtx, kafka.Message{Key: []byte(entry.Project), Value: body, Time: time.Now()})
+		})
 		if err != nil {
-			log.Printf("outbox begin: %v", err)
-			continue
-		}
-		var id, project, kind string
-		var payload []byte
-		err = tx.QueryRow(ctx, "SELECT id,project_id,event_type,payload FROM outbox WHERE published_at IS NULL ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED").Scan(&id, &project, &kind, &payload)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			continue
-		}
-		var value any
-		_ = json.Unmarshal(payload, &value)
-		body, _ := json.Marshal(map[string]any{"id": id, "project_id": project, "type": kind, "payload": value})
-		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err = writer.WriteMessages(sendCtx, kafka.Message{Key: []byte(project), Value: body, Time: time.Now()})
-		cancel()
-		if err != nil {
-			_, _ = tx.Exec(ctx, "UPDATE outbox SET attempts=attempts+1,last_error=$2 WHERE id=$1", id, err.Error())
-			_ = tx.Commit(ctx)
 			log.Printf("outbox publish: %v", err)
-			continue
 		}
-		_, err = tx.Exec(ctx, "UPDATE outbox SET published_at=now(),attempts=attempts+1,last_error=NULL WHERE id=$1", id)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			continue
-		}
-		_ = tx.Commit(ctx)
 	}
 }
