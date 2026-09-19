@@ -64,11 +64,12 @@ func (d *DB) ProfileProjects(ctx context.Context, tx pgx.Tx, account, origin str
 
 func (d *DB) AccountPayload(ctx context.Context, tx pgx.Tx, user string, roles []string) (map[string]any, error) {
 	var email, login, name, given, family, avatar string
-	err := tx.QueryRow(ctx, "SELECT email,login,name,given_name,family_name,avatar_url FROM accounts WHERE id=$1 AND status='active' AND email_verified_at IS NOT NULL", user).Scan(&email, &login, &name, &given, &family, &avatar)
+	var oldID *int64
+	err := tx.QueryRow(ctx, "SELECT email,login,name,given_name,family_name,avatar_url,old_id FROM accounts WHERE id=$1 AND status='active' AND email_verified_at IS NOT NULL", user).Scan(&email, &login, &name, &given, &family, &avatar, &oldID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"user_id": user, "email": email, "login": login, "name": name, "given_name": given, "family_name": family, "avatar_url": avatar, "roles": roles}, nil
+	return map[string]any{"user_id": user, "old_id": oldID, "email": email, "login": login, "name": name, "given_name": given, "family_name": family, "avatar_url": avatar, "roles": roles}, nil
 }
 
 type SyncEvent struct {
@@ -97,7 +98,7 @@ func (d *DB) Snapshot(ctx context.Context, project, after string, requestedCurso
 	} else if err = tx.QueryRow(ctx, "SELECT coalesce(max(id),0) FROM sync_events").Scan(&result.Cursor); err != nil {
 		return result, err
 	}
-	rows, err := tx.Query(ctx, `SELECT a.id,a.email,a.login,a.name,a.given_name,a.family_name,a.avatar_url,p.roles
+	rows, err := tx.Query(ctx, `SELECT a.id,a.old_id,a.email,a.login,a.name,a.given_name,a.family_name,a.avatar_url,p.roles
 		FROM project_access p JOIN accounts a ON a.id=p.account_id
 		WHERE p.project_id=$1 AND a.id>$2 AND a.status='active' AND a.email_verified_at IS NOT NULL
 		ORDER BY a.id LIMIT 201`, project, after)
@@ -106,11 +107,12 @@ func (d *DB) Snapshot(ctx context.Context, project, after string, requestedCurso
 	}
 	for rows.Next() {
 		var id, email, login, name, given, family, avatar string
+		var oldID *int64
 		var roles []string
-		if err = rows.Scan(&id, &email, &login, &name, &given, &family, &avatar, &roles); err != nil {
+		if err = rows.Scan(&id, &oldID, &email, &login, &name, &given, &family, &avatar, &roles); err != nil {
 			break
 		}
-		result.Users = append(result.Users, map[string]any{"user_id": id, "email": email, "login": login, "name": name, "given_name": given, "family_name": family, "avatar_url": avatar, "roles": roles})
+		result.Users = append(result.Users, map[string]any{"user_id": id, "old_id": oldID, "email": email, "login": login, "name": name, "given_name": given, "family_name": family, "avatar_url": avatar, "roles": roles})
 	}
 	if err == nil {
 		err = rows.Err()

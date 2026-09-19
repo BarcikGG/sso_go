@@ -53,7 +53,11 @@ func (s Identity) Register(ctx context.Context, in Registration) error {
 	if err != nil {
 		return err
 	}
-	id, token := security.RandomToken(), security.RandomToken()
+	id, err := security.NewUUIDv7()
+	if err != nil {
+		return err
+	}
+	token := security.RandomToken()
 	err = s.Repo.CreatePendingAccount(ctx, postgres.PendingAccount{ID: id, Email: email, Login: login, PasswordHash: hash, Name: name, GivenName: given, FamilyName: family, VerificationHash: postgres.Hash(token)})
 	if err != nil {
 		return storageError(err)
@@ -84,6 +88,7 @@ func (s Identity) VerifyEmail(ctx context.Context, token string) error {
 func (s Identity) Login(ctx context.Context, identifier, password, token string) (string, error) {
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	var status string
+	var legacyID, legacyHash string
 	err := s.Repo.WithLogin(ctx, identifier, func(a postgres.LoginAccount, create func(string) error) error {
 		ok, err := s.Passwords.Verify(password, a.PasswordHash)
 		if err != nil || !ok {
@@ -96,10 +101,22 @@ func (s Identity) Login(ctx context.Context, identifier, password, token string)
 			return ErrDisabled
 		}
 		status = a.Status
+		if security.IsLegacyBcrypt(a.PasswordHash) {
+			legacyID, legacyHash = a.ID, a.PasswordHash
+		}
 		return create(postgres.Hash(token))
 	})
 	if postgres.IsNotFound(err) {
 		return "", ErrInvalidCredentials
+	}
+	if err == nil && legacyID != "" {
+		upgraded, hashErr := s.Passwords.Hash(password)
+		if hashErr == nil {
+			hashErr = s.Repo.UpgradePasswordHash(ctx, legacyID, legacyHash, upgraded)
+		}
+		if hashErr != nil {
+			log.Printf("legacy password upgrade failed for account %s: %v", legacyID, hashErr)
+		}
 	}
 	return status, err
 }

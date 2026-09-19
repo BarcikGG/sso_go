@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -60,6 +61,13 @@ func (h *PasswordHasher) Hash(password string) (string, error) {
 }
 
 func (h *PasswordHasher) Verify(password, encoded string) (bool, error) {
+	if IsLegacyBcrypt(encoded) {
+		err := bcrypt.CompareHashAndPassword([]byte(encoded), []byte(password))
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			return false, nil
+		}
+		return err == nil, err
+	}
 	params, salt, hash, err := decodeHash(encoded)
 	if err != nil {
 		return false, err
@@ -71,6 +79,18 @@ func (h *PasswordHasher) Verify(password, encoded string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func IsLegacyBcrypt(encoded string) bool {
+	return strings.HasPrefix(encoded, "$2a$") || strings.HasPrefix(encoded, "$2b$") || strings.HasPrefix(encoded, "$2y$")
+}
+
+func IsValidLegacyBcrypt(encoded string) bool {
+	if !IsLegacyBcrypt(encoded) {
+		return false
+	}
+	_, err := bcrypt.Cost([]byte(encoded))
+	return err == nil
 }
 
 func decodeHash(encoded string) (*PasswordHasher, []byte, []byte, error) {

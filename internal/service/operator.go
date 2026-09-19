@@ -39,7 +39,11 @@ func (s Operator) Bootstrap(ctx context.Context, b Bootstrap) error {
 	if b.ClientSecret != "" {
 		clientHash = postgres.Hash(b.ClientSecret)
 	}
-	return s.Repo.EnsureBootstrap(ctx, b.Project, b.ClientID, clientHash, b.Redirect, security.RandomToken(), strings.ToLower(b.AdminEmail), adminHash)
+	adminID, err := security.NewUUIDv7()
+	if err != nil {
+		return err
+	}
+	return s.Repo.EnsureBootstrap(ctx, b.Project, b.ClientID, clientHash, b.Redirect, adminID, strings.ToLower(b.AdminEmail), adminHash)
 }
 
 func (s Operator) RegisterClient(ctx context.Context, id, project, secret string, redirects []string) error {

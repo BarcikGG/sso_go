@@ -52,7 +52,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 	if err = tx.QueryRow(ctx, "SELECT coalesce(max(version),0) FROM schema_migrations").Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 3 {
 		return fmt.Errorf("database migration %d is newer than this binary", version)
 	}
 	if version == 0 {
@@ -75,6 +75,15 @@ func (d *DB) Migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 2: %w", err)
 		}
 		if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES(2)"); err != nil {
+			return err
+		}
+		version = 2
+	}
+	if version == 2 {
+		if _, err = tx.Exec(ctx, migration.LegacyIDs); err != nil {
+			return fmt.Errorf("migration 3: %w", err)
+		}
+		if _, err = tx.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES(3)"); err != nil {
 			return err
 		}
 	}

@@ -94,6 +94,11 @@ func (d *DB) DeleteSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+func (d *DB) UpgradePasswordHash(ctx context.Context, id, previous, upgraded string) error {
+	_, err := d.Pool.Exec(ctx, "UPDATE accounts SET password_hash=$1,updated_at=now() WHERE id=$2 AND password_hash=$3", upgraded, id, previous)
+	return err
+}
+
 type UserProject struct{ ID, Name, Status string }
 
 func (d *DB) UserProjects(ctx context.Context, user string) ([]UserProject, error) {

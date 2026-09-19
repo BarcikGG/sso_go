@@ -7,3 +7,6 @@ var Initial string
 
 //go:embed 000002_identity.up.sql
 var Identity string
+
+//go:embed 000003_legacy_ids.up.sql
+var LegacyIDs string
